@@ -15,6 +15,16 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 from torchvision.models import vgg16, vgg16_bn
 
+CLASS_LIST = ['aeroplane', 'bicycle', 'bird', 'boat', 'bottle',
+              'bus', 'car', 'cat', 'chair', 'cow',
+              'diningtable', 'dog', 'horse', 'motorbike', 'person',
+              'pottedplant', 'sheep', 'sofa', 'train', 'tvmonitor']
+CLASS_COLOR_MAP = np.asarray([[0, 0, 0],
+                              [128, 0, 0], [0, 128, 0], [128, 128, 0], [0, 0, 128], [128, 0, 128],
+                              [0, 128, 128], [128, 128, 128], [64, 0, 0], [192, 0, 0], [64, 128, 0],
+                              [192, 128, 0], [64, 0, 128], [192, 0, 128], [64, 128, 128], [192, 128, 128],
+                              [0, 64, 0], [128, 64, 0], [0, 192, 0], [128, 192, 0], [0, 64, 128]])
+
 
 class VOCDataset(Dataset):
     def __init__(self, image_list, transforms):
@@ -110,12 +120,14 @@ def crop_by_bbox(image_dir, anno_dir, seg_dir, seg_list=None, image_ext='jpg', a
     Return:
         None
     """
-    roi_dir = os.path.dirname(image_dir) + '/ROIs'
-    seg_roi_dir = os.path.dirname(image_dir) + '/Seg_ROIs'
+    roi_dir = os.path.dirname(image_dir) + '/val_ROIs'
+    seg_roi_dir = os.path.dirname(image_dir) + '/val_Seg_ROIs'
     if not os.path.isdir(roi_dir):
         os.makedirs(roi_dir)
     if not os.path.isdir(seg_roi_dir):
         os.makedirs(seg_roi_dir)
+
+    class_id = {class_name: i + 1 for i, class_name in enumerate(CLASS_LIST)}
 
     image_list = glob.glob(image_dir + '/*.' + image_ext)
     for image_file in tqdm.tqdm(image_list):
@@ -126,8 +138,8 @@ def crop_by_bbox(image_dir, anno_dir, seg_dir, seg_list=None, image_ext='jpg', a
         seg_file = os.path.join(seg_dir, fname + '.png')
         image = Image.open(image_file).convert('RGB')
         image = np.array(image)
-        seg = Image.open(seg_file).convert('RGB')
-        seg = np.array(seg)
+        seg_rgb = Image.open(seg_file).convert('RGB')
+        seg_rgb = np.array(seg_rgb)
 
         anno_file = os.path.join(anno_dir, fname + '.' + anno_ext)
         root = ET.parse(anno_file).getroot()
@@ -157,10 +169,32 @@ def crop_by_bbox(image_dir, anno_dir, seg_dir, seg_list=None, image_ext='jpg', a
             roi_file = os.path.join(roi_dir, '{}#{}_{}.jpg'.format(fname, cls_name, cls_cnt[cls_name]))
             image_roi = Image.fromarray(image_roi)
             image_roi.save(roi_file)
-            
-            # seg_roi = seg[ymin:ymax, xmin:xmax]
-            # unique_labels, cnt_labels = np.unique(seg_roi, return_counts=True)
-            # seg_roi_file = os.path.join(seg_roi_dir, '{}#{}_{}.png'.format(fname, cls_name, cls_cnt[cls_name]))
+
+            cid = class_id[cls_name]
+            r, g, b = CLASS_COLOR_MAP[cid]
+            seg = seg_rgb.astype(np.float32)
+            channel_r = (seg[:, :, 0] == r).astype(np.uint8)
+            channel_g = (seg[:, :, 1] == g).astype(np.uint8)
+            channel_b = (seg[:, :, 2] == b).astype(np.uint8)
+            seg = (channel_r * channel_g) * channel_b
+
+            if seg.max() != 1:
+                print(seg.max(), image_file, seg_file)
+                continue
+            assert(seg.max() == 1)
+
+            # fig, ax = plt.subplots(1, 3, figsize=(15, 5))
+            # ax[0].imshow(image)
+            # ax[0].set_title('class {}: {}'.format(cid, cls_name))
+            # ax[1].imshow(seg_rgb)
+            # ax[1].set_title('class cmap: [{}, {}, {}]'.format(r, g, b))
+            # ax[2].imshow(seg)
+            # plt.show()
+
+            seg_roi = seg[ymin:ymax, xmin:xmax]
+            seg_roi_file = os.path.join(seg_roi_dir, '{}#{}_{}.png'.format(fname, cls_name, cls_cnt[cls_name]))
+            seg_roi = Image.fromarray(seg_roi)
+            seg_roi.save(seg_roi_file)
 
 
 def cluster_vgg16_feat():
@@ -168,14 +202,9 @@ def cluster_vgg16_feat():
     roi_dir = '/home/kang/Projects/data/VOC/VOCdevkit/VOC2012/ROIs'
     centers_dir = '/home/kang/Projects/data/VOC/VOCdevkit/VOC2012/kmeans_centers'
     if not os.path.isdir(centers_dir):
-        os.path.makedirs(centers_dir)
+        os.makedirs(centers_dir)
 
-    class_list = ['person',
-                  'bird', 'cat', 'cow', 'dog', 'horse', 'sheep',
-                  'aeroplane', 'bicycle', 'boat', 'bus', 'car', 'motorbike', 'train',
-                  'bottle', 'chair', 'diningtable', 'pottedplant', 'sofa', 'tvmonitor']
-
-    for cls_name in class_list:
+    for cls_name in CLASS_LIST:
         feat_list = glob.glob(feat_dir + f'/*{cls_name}*.npy')
         feat_list = sorted(feat_list)
         feat_dim = 4096
@@ -184,7 +213,7 @@ def cluster_vgg16_feat():
             with open(feat_file, 'rb') as f:
                 feat_i = np.load(f)
             feat_matrix[i, :] = feat_i
-        
+
         # k-means clustering
         from sklearn.cluster import KMeans
         from sklearn.neighbors import NearestNeighbors
@@ -193,11 +222,12 @@ def cluster_vgg16_feat():
 
         nbrs = NearestNeighbors(n_neighbors=1).fit(feat_matrix)
         distances, indices = nbrs.kneighbors(centers)
-        
+
         # copy cluster center images to the centers_dir
         center_feat_list = [feat_list[i] for i in indices.squeeze().tolist()]
-        center_image_list = [os.path.join(roi_dir, os.path.basename(center_feat_file).replace('.npy', '.jpg')) for center_feat_file in center_feat_list]
-        
+        center_image_list = [os.path.join(roi_dir, os.path.basename(center_feat_file).replace('.npy', '.jpg')) for
+                             center_feat_file in center_feat_list]
+
         dst_dir = os.path.join(centers_dir, cls_name)
         if not os.path.isdir(dst_dir):
             os.makedirs(dst_dir)
@@ -205,32 +235,61 @@ def cluster_vgg16_feat():
             shutil.copy(center_image_file, dst_dir)
 
 
-
 if __name__ == '__main__':
     voc_dir = '/home/kang/Projects/data/VOC/VOCdevkit/VOC2012'
-    image_dir = os.path.join(voc_dir, 'JPEGImages')
 
     """
     # crop VOC images and segmentations based on bounding boxe
     """
-    anno_dir = os.path.join(voc_dir, 'Annotations')
-    seg_dir = os.path.join(voc_dir, 'SegmentationObject')
-    seg_list_file = '/home/kang/Projects/data/VOC/VOCdevkit/VOC2012/ImageSets/Segmentation/train.txt'
-    with open(seg_list_file, 'r') as f:
-        seg_list = f.read().splitlines()
-
-    crop_by_bbox(image_dir, anno_dir, seg_dir, seg_list)
+    # image_dir = os.path.join(voc_dir, 'JPEGImages')
+    # anno_dir = os.path.join(voc_dir, 'Annotations')
+    # seg_dir = os.path.join(voc_dir, 'SegmentationClass')
+    # seg_list_file = '/home/kang/Projects/data/VOC/VOCdevkit/VOC2012/ImageSets/Segmentation/val.txt'
+    # # seg_dir = '/home/kang/Projects/data/VOC/VOCdevkit/VOC2012/Binary_map_aug/train/'
+    # with open(seg_list_file, 'r') as f:
+    #     seg_list = f.read().splitlines()
+    # crop_by_bbox(image_dir, anno_dir, seg_dir, seg_list)
 
     """
     # extract vgg16 features for VOC images
     """
-    roi_dir = os.path.join(voc_dir, 'ROIs')
-    image_list = glob.glob(roi_dir + '/*.jpg')
-    image_list = sorted(image_list)
-    feat_dir = os.path.join(voc_dir, 'ROIs_vgg16_feat')
-    extract_vgg16_feature(image_list, feat_dir, classifier_layer=5)
+    # roi_dir = os.path.join(voc_dir, 'ROIs')
+    # image_list = glob.glob(roi_dir + '/*.jpg')
+    # image_list = sorted(image_list)
+    # feat_dir = os.path.join(voc_dir, 'ROIs_vgg16_feat')
+    # extract_vgg16_feature(image_list, feat_dir, classifier_layer=5)
 
     """
     cluster vgg16 features using k-means
     """
-    cluster_vgg16_feat()
+    # cluster_vgg16_feat()
+
+    """
+    copy GT segmentation masks to support set
+    """
+    # support_dir = '/home/kang/Projects/data/VOC/VOCdevkit/VOC2012/fss/support/'
+    # support_image_dir = os.path.join(support_dir, 'images')
+    # support_label_dir = os.path.join(support_dir, 'labels')
+    # seg_roi_dir = '/home/kang/Projects/data/VOC/VOCdevkit/VOC2012/Seg_ROIs'
+    # for cls in CLASS_LIST:
+    #     cls_image_dir = os.path.join(support_image_dir, cls)
+    #     image_files = glob.glob(cls_image_dir + '/*.jpg')
+    #     cls_label_dir = os.path.join(support_label_dir, cls)
+    #     if not os.path.isdir(cls_label_dir):
+    #         os.mkdir(cls_label_dir)
+    #     for image_file in image_files:
+    #         fname = os.path.splitext(os.path.basename(image_file))[0]
+    #         src_label_file = os.path.join(seg_roi_dir, fname + '.png')
+    #         shutil.copy(src_label_file, cls_label_dir)
+
+    """
+    move images
+    """
+    query_dir = os.path.join(voc_dir, 'fss', 'query', 'images')
+    for cls in CLASS_LIST:
+        cls_dir = os.path.join(query_dir, cls)
+        if not os.path.isdir(cls_dir):
+            os.mkdir(cls_dir)
+        image_files = glob.glob(query_dir + f'/*{cls}*.jpg')
+        for image_file in image_files:
+            shutil.move(image_file, cls_dir)
