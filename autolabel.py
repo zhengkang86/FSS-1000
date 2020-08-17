@@ -2,17 +2,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
-from torch.optim.lr_scheduler import StepLR
 import torchvision.models as models
 import numpy as np
 import os
-import math
 import argparse
-import random
 import cv2
 import subprocess
-import time
 import matplotlib.pyplot as plt
+import tqdm
+
 
 parser = argparse.ArgumentParser(description="One Shot Visual Recognition")
 parser.add_argument("-f", "--feature_dim", type=int, default=64)
@@ -21,7 +19,6 @@ parser.add_argument("-w", "--class_num", type=int, default=1)
 parser.add_argument("-s", "--sample_num_per_class", type=int, default=5)
 parser.add_argument("-b", "--batch_num_per_class", type=int, default=1)
 parser.add_argument("-e", "--episode", type=int, default=50000)
-# parser.add_argument("-t","--test_episode", type = int, default = 1000)
 parser.add_argument("-l", "--learning_rate", type=float, default=0.001)
 parser.add_argument("-g", "--gpu", type=int, default=0)
 parser.add_argument("-u", "--hidden_unit", type=int, default=10)
@@ -36,6 +33,7 @@ args = parser.parse_args()
 os.environ["CUDA_VISIBLE_DEVICES"] = str(np.argmax([int(x.split()[2]) \
                                                     for x in subprocess.Popen("nvidia-smi -q -d Memory |\
                                     grep -A4 GPU | grep Free", shell=True, stdout=subprocess.PIPE).stdout.readlines()]))
+
 
 # Hyper Parameters
 FEATURE_DIM = args.feature_dim
@@ -52,6 +50,11 @@ DISPLAY_QUERY = args.display_query_num
 TEST_CLASS = args.test_class
 FEATURE_MODEL = args.feature_encoder_model
 RELATION_MODEL = args.relation_network_model
+
+CLASS_LIST = ['aeroplane', 'bicycle', 'bird', 'boat', 'bottle',
+              'bus', 'car', 'cat', 'chair', 'cow',
+              'diningtable', 'dog', 'horse', 'motorbike', 'person',
+              'pottedplant', 'sheep', 'sofa', 'train', 'tvmonitor']
 
 
 class CNNEncoder(nn.Module):
@@ -156,7 +159,7 @@ class RelationNetwork(nn.Module):
         return out
 
 
-def get_oneshot_batch(testname):
+def get_oneshot_batch(testname, support_dir, support_label_dir, query_dir):
     support_images = np.zeros((CLASS_NUM * SAMPLE_NUM_PER_CLASS, 3, 224, 224), dtype=np.float32)
     support_labels = np.zeros((CLASS_NUM * SAMPLE_NUM_PER_CLASS, CLASS_NUM, 224, 224), dtype=np.float32)
     query_images = np.zeros((CLASS_NUM * BATCH_NUM_PER_CLASS, 3, 224, 224), dtype=np.float32)
@@ -164,27 +167,34 @@ def get_oneshot_batch(testname):
     zeros = np.zeros((CLASS_NUM * BATCH_NUM_PER_CLASS, 1, 224, 224), dtype=np.float32)
     class_cnt = 0
 
-    imgnames = os.listdir('./%s/label' % args.support_dir)
-    testnames = os.listdir('%s' % args.test_dir)
-    indexs = list(range(0, len(imgnames)))[0:5]
-    chosen_index = indexs
-    j = 0
-    for k in chosen_index:
-        image = cv2.imread('%s/image/%s' % (args.support_dir, imgnames[k].replace('.png', '.jpg')))
+    # imgnames = os.listdir('./%s/label' % args.support_dir)
+    imgnames = os.listdir(support_label_dir)
+    assert(len(imgnames) == 5)
+    for k in range(5):
+        # image = cv2.imread('%s/image/%s' % (args.support_dir, imgnames[k].replace('.png', '.jpg')))
+        image = cv2.imread('{}/{}'.format(support_dir, imgnames[k].replace('.png', '.jpg')))
+        image = cv2.resize(image, (224, 224))
         if image is None:
             raise Exception('cannot load image ')
 
         image = image[:, :, ::-1]  # bgr to rgb
         image = image / 255.0
         image = np.transpose(image, (2, 0, 1))
-        # labels
-        # print ('%s/label/%s' % (args.support_dir, imgnames[k]))
-        label = cv2.imread('%s/label/%s' % (args.support_dir, imgnames[k]))[:, :, 0]
+        # label = cv2.imread('%s/label/%s' % (args.support_dir, imgnames[k]))[:, :, 0]
+        label = cv2.imread('{}/{}'.format(support_label_dir, imgnames[k]))
+        label = cv2.resize(label, (224, 224), cv2.INTER_NEAREST)
+        label = label[:, :, 0]
+
+        # fig, ax = plt.subplots(1, 2)
+        # ax[0].imshow(np.transpose(image, (1, 2, 0)))
+        # ax[1].imshow(label, vmin=0, vmax=1)
+        # plt.show()
 
         support_images[k] = image
         support_labels[k][0] = label
 
-    testimage = cv2.imread('%s/%s' % (args.test_dir, testname))
+    # testimage = cv2.imread('%s/%s' % (args.test_dir, testname))
+    testimage = cv2.imread(f'{query_dir}/{testname}')
     testimage = cv2.resize(testimage, (224, 224))
     testimage = testimage[:, :, ::-1]  # bgr to rgb
     testimage = testimage / 255.0
@@ -269,15 +279,15 @@ def decode_segmap(label_mask, plot=False):
         return rgb
 
 
-def maskimg(img, mask, edge, color=[0, 0, 255], alpha=0.5):
-    '''
+def maskimg(img, mask, edge, color=(0, 0, 255), alpha=0.5):
+    """
     img: cv2 image
     mask: bool or np.where
     color: BGR triplet [_, _, _]. Default: [0, 255, 255] is yellow.
     alpha: float [0, 1].
 
     Ref: http://www.pyimagesearch.com/2016/03/07/transparent-overlays-with-opencv/
-    '''
+    """
     out = img.copy()
     img_layer = img.copy()
     img_layer[mask == 255] = color
@@ -285,15 +295,17 @@ def maskimg(img, mask, edge, color=[0, 0, 255], alpha=0.5):
     edge_layer[edge == 255] = color
     out = cv2.addWeighted(edge_layer, 1, out, 0, 0, out)
     out = cv2.addWeighted(img_layer, alpha, out, 1 - alpha, 0, out)
-    return (out)
+    return out
 
 
 def main():
+    """
+    Initialize network, load weights
+    """
     feature_encoder = CNNEncoder()
     relation_network = RelationNetwork()
     feature_encoder.cuda(GPU)
     relation_network.cuda(GPU)
-
     if os.path.exists(FEATURE_MODEL):
         feature_encoder.load_state_dict(torch.load(FEATURE_MODEL))
         print("load feature encoder success")
@@ -305,73 +317,54 @@ def main():
     else:
         raise Exception('Can not load relation network: %s' % RELATION_MODEL)
 
-    print("Testing...")
-    classname = args.support_dir
-    if not os.path.exists('result1'):
-        os.makedirs('result1')
-    if not os.path.exists('./result1/%s' % classname):
-        os.makedirs('./result1/%s' % classname)
+    """
+    Inference
+    """
     stick = np.zeros((224 * 4, 224 * 5, 3), dtype=np.uint8)
+    for cls_name in CLASS_LIST:
+        print(cls_name)
+        s_dir = os.path.join(args.support_dir, 'images', cls_name)
+        s_label_dir = os.path.join(args.support_dir, 'labels', cls_name)
+        q_dir = os.path.join(args.test_dir, 'images', cls_name)
+        q_label_dir = os.path.join(args.test_dir, 'labels', cls_name)
+        q_vis_dir = os.path.join(args.test_dir, 'labels_vis', cls_name)
+        if not os.path.isdir(q_label_dir):
+            os.makedirs(q_label_dir)
+        if not os.path.isdir(q_vis_dir):
+            os.makedirs(q_vis_dir)
+        testnames = os.listdir(q_dir)
 
-    testnames = os.listdir('%s' % args.test_dir)
-    print('%s testing images in class %s' % (len(testnames), classname))
+        for cnt, testname in enumerate(tqdm.tqdm(testnames)):
+            samples, sample_labels, batches, batch_labels = get_oneshot_batch(testname, s_dir, s_label_dir, q_dir)
 
-    for cnt, testname in enumerate(testnames):
+            # forward
+            sample_features, _ = feature_encoder(Variable(samples).cuda(GPU))
+            sample_features = sample_features.view(CLASS_NUM, SAMPLE_NUM_PER_CLASS, 512, 7, 7)
+            sample_features = torch.sum(sample_features, 1).squeeze(1)  # 1*512*7*7
+            batch_features, ft_list = feature_encoder(Variable(batches).cuda(GPU))
+            sample_features_ext = sample_features.unsqueeze(0).repeat(BATCH_NUM_PER_CLASS * CLASS_NUM, 1, 1, 1, 1)
+            batch_features_ext = batch_features.unsqueeze(0).repeat(CLASS_NUM, 1, 1, 1, 1)
+            batch_features_ext = torch.transpose(batch_features_ext, 0, 1)
+            relation_pairs = torch.cat((sample_features_ext, batch_features_ext), 2).view(-1, 1024, 7, 7)
+            output = relation_network(relation_pairs, ft_list).view(-1, CLASS_NUM, 224, 224)
 
-        print('%s / %s' % (cnt, len(testnames)))
-        print(testname)
-        if cv2.imread('%s/%s' % (args.test_dir, testname)) is None:
-            continue
-
-        samples, sample_labels, batches, batch_labels = get_oneshot_batch(testname)
-
-        # forward
-        sample_features, _ = feature_encoder(Variable(samples).cuda(GPU))
-        sample_features = sample_features.view(CLASS_NUM, SAMPLE_NUM_PER_CLASS, 512, 7, 7)
-        sample_features = torch.sum(sample_features, 1).squeeze(1)  # 1*512*7*7
-        batch_features, ft_list = feature_encoder(Variable(batches).cuda(GPU))
-        sample_features_ext = sample_features.unsqueeze(0).repeat(BATCH_NUM_PER_CLASS * CLASS_NUM, 1, 1, 1, 1)
-        batch_features_ext = batch_features.unsqueeze(0).repeat(CLASS_NUM, 1, 1, 1, 1)
-        batch_features_ext = torch.transpose(batch_features_ext, 0, 1)
-        relation_pairs = torch.cat((sample_features_ext, batch_features_ext), 2).view(-1, 1024, 7, 7)
-        output = relation_network(relation_pairs, ft_list).view(-1, CLASS_NUM, 224, 224)
-
-        classiou = 0
-        for i in range(0, batches.size()[0]):
-            # get prediction
-            pred = output.data.cpu().numpy()[i][0]
+            testimg = np.transpose(batches.numpy()[0][0:3], (1, 2, 0))[:, :, ::-1] * 255
+            pred = output.data.cpu().numpy()[0][0]
             pred[pred <= 0.5] = 0
             pred[pred > 0.5] = 1
-            # vis
-            demo = cv2.cvtColor(pred, cv2.COLOR_GRAY2RGB) * 255
-            stick[224 * 3:224 * 4, 224 * i:224 * (i + 1), :] = demo.copy()
+            pred = cv2.cvtColor(pred, cv2.COLOR_GRAY2RGB) * 255
+            testlabel = pred.astype(np.uint8)
 
-            testlabel = batch_labels.numpy()[i][0].astype(bool)
-            pred = pred.astype(bool)
-            # compute IOU
-            overlap = testlabel * pred
-            union = testlabel + pred
-            iou = overlap.sum() / float(union.sum())
-            # print ('iou=%0.4f' % iou)
-            classiou += iou
-        classiou /= 5.0
+            orig_testimg = cv2.imread(os.path.join(q_dir, testname))
+            h, w, c = orig_testimg.shape
+            testlabel = cv2.resize(testlabel, (w, h), cv2.INTER_NEAREST)
+            testedge = cv2.Canny(testlabel, 1, 1)
 
-        # visulization
-        if cnt == 0:
-            for i in range(0, samples.size()[0]):
-                suppimg = np.transpose(samples.numpy()[i][0:3], (1, 2, 0))[:, :, ::-1] * 255
-                supplabel = np.transpose(sample_labels.numpy()[i], (1, 2, 0))
-                supplabel = cv2.cvtColor(supplabel, cv2.COLOR_GRAY2RGB)
-                supplabel = (supplabel * 255).astype(np.uint8)
-                suppedge = cv2.Canny(supplabel, 1, 1)
-
-                cv2.imwrite('./result1/%s/supp%s.png' % (classname, i),
-                            maskimg(suppimg, supplabel.copy()[:, :, 0], suppedge, color=[0, 255, 0]))
-        testimg = np.transpose(batches.numpy()[0][0:3], (1, 2, 0))[:, :, ::-1] * 255
-        testlabel = stick[224 * 3:224 * 4, 224 * i:224 * (i + 1), :].astype(np.uint8)
-        testedge = cv2.Canny(testlabel, 1, 1)
-        cv2.imwrite('./result1/%s/test%s_raw.png' % (classname, cnt), testimg)  # raw image
-        cv2.imwrite('./result1/%s/test%s.png' % (classname, cnt), maskimg(testimg, testlabel.copy()[:, :, 0], testedge))
+            fname = os.path.splitext(os.path.basename(testname))[0]
+            label_file = os.path.join(q_label_dir, fname + '.png')
+            vis_file = os.path.join(q_vis_dir, fname + '_vis.png')
+            cv2.imwrite(label_file, testlabel)
+            cv2.imwrite(vis_file, maskimg(orig_testimg, testlabel.copy()[:, :, 0], testedge))
 
 
 if __name__ == '__main__':
