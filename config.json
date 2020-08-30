@@ -1,0 +1,14 @@
+{
+  "coco_dir": "/WD1/few-shot/ms-coco",
+  "pretrained_vgg": "/home/rudy/.torch/models/vgg16-397923af.pth",
+  "main_gpu": 1,
+  "gpu_list": [0,1],
+  "batch_size": 4,
+  "num_workers": 4,
+  "lr": 1e-3,
+  "momentum": 0.9,
+  "weight_decay": 1e-4,
+  "n_shots": 1,
+  "print_freq": 10,
+  "val_freq": 100
+}
