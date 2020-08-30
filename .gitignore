@@ -4,3 +4,5 @@
 *.pyc
 /result*
 /models
+.vscode
+.idea
