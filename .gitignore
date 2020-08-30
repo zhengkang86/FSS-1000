@@ -1,6 +1,6 @@
 .idea
 .vscode
+*.egg-info/
+*.pyc
 /result*
 /models
-.vscode
-.idea
