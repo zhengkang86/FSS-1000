@@ -1,3 +1,4 @@
+import os
 import cv2
 import numpy as np
 
@@ -103,6 +104,9 @@ def UniformSampleCtr(pgtnp_px2, newpnum):
 
 
 def EvalIoU(pred, gt, num_classes=2):
+    """
+    Deprecated.
+    """
     iou = 0.0
     for i in range(1, num_classes):
         intersection = np.sum(np.logical_and(pred == i, gt == i))
@@ -117,3 +121,9 @@ def EvalIoU(pred, gt, num_classes=2):
     # cv2.waitKey()
 
     return iou/(num_classes-1)
+
+
+
+if __name__ == '__main__':
+    pass
+    # FindBadInstance()
