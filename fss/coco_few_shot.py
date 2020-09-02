@@ -31,6 +31,8 @@ class FewShotInstData(data.Dataset):
 
         self.n_shots = n_shots
         self.img_size = img_size
+        self.coco_dir = coco_dir
+        self.subset = subset
 
     def __len__(self):
         return len(self.inst_ids)
@@ -43,7 +45,10 @@ class FewShotInstData(data.Dataset):
 
         img_id = inst_anno[0]['image_id']
         img_dict = self.coco.loadImgs(img_id)[0]
-        img = io.imread(img_dict['coco_url'])
+        # img = io.imread(os.path.join(self.coco_dir, self.subset, img_dict['file_name']))
+        img = cv2.imread(os.path.join(self.coco_dir, self.subset, img_dict['file_name']))
+        if len(img.shape) == 2:
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
 
         bbox = inst_anno[0]['bbox']
         [x_min, y_min, w, h] = inst_anno[0]['bbox']
@@ -60,9 +65,9 @@ class FewShotInstData(data.Dataset):
         y_min = max(0, np.round(y_min).astype(np.int))
         y_max = min(img.shape[0] - 1, np.round(y_max).astype(np.int))
         roi = img[y_min:y_max, x_min:x_max].copy()
-        roi = cv2.resize(roi, (self.img_size, self.img_size))
+        # roi = cv2.resize(roi, (self.img_size, self.img_size))
         roi_mask = img_mask[y_min:y_max, x_min:x_max].copy()
-        roi_mask = cv2.resize(roi_mask, (self.img_size, self.img_size))
+        # roi_mask = cv2.resize(roi_mask, (self.img_size, self.img_size))
 
         inst = {
             "inst_id": inst_id,
@@ -78,6 +83,7 @@ class FewShotInstData(data.Dataset):
         query_inst = self.getInstByID(query_inst_id)
 
         same_cat_inst_ids = self.coco.getAnnIds(catIds=query_inst["inst_cat_id"], iscrowd=False)
+        same_cat_inst_ids.remove(query_inst_id)
         support_inst_ids = random.choices(same_cat_inst_ids, k=self.n_shots)
         support_insts = [self.getInstByID(inst_id) for inst_id in support_inst_ids]
 
