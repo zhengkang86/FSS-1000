@@ -13,7 +13,11 @@ from multiprocessing import Pool
 from utils import UniformSampleCtr
 from tqdm import tqdm
 
-coco_dir = '/WD1/few-shot/ms-coco'
+import multiprocessing
+from joblib import Parallel, delayed
+
+# coco_dir = '/WD1/few-shot/ms-coco'
+coco_dir = '/home/kang/Projects/data/COCO'
 subset = 'train2017'
 anno_file = '{}/annotations/instances_{}.json'.format(coco_dir, subset)
 coco = COCO(anno_file)
@@ -23,7 +27,8 @@ for cat_id in all_cat_ids:
     all_inst_ids += coco.getAnnIds(catIds=cat_id)
 # all_inst_ids = all_inst_ids[100:1000]
 
-bad_inst_json = '/WD1/few-shot/kang-FSS-1000/bad_inst_list.json'
+# bad_inst_json = '/WD1/few-shot/kang-FSS-1000/bad_inst_list.json'
+bad_inst_json = './bad_inst_list.json'
 if os.path.exists(bad_inst_json):
     bad_inst_list = json.load(open(bad_inst_json))
 else:
@@ -63,6 +68,9 @@ def preprocess(idx):
     y_max = min(img.shape[0] - 1, np.round(y_max).astype(np.int))
 
     # preprocess the roi image
+    if y_max == y_min or x_max == x_min:
+        bad_inst_list.append(inst_id)
+        return
     roi_img = img[y_min:y_max, x_min:x_max].copy()
     inst_shape = roi_img.shape
     if inst_shape[0]*inst_shape[1] < 2500:
