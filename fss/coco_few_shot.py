@@ -10,7 +10,7 @@ import skimage.io as io
 
 
 class FewShotInstData(data.Dataset):
-    def __init__(self, coco_dir, subset, folds, n_shots, img_size=224):
+    def __init__(self, coco_dir, subset, folds, n_shots, img_size=224, exclude_list_file=None):
         '''
         :param coco_dir: The path of COCO folder.
         :param subset: 'train2017', 'val2017' or 'test2017'.
@@ -28,6 +28,10 @@ class FewShotInstData(data.Dataset):
         self.inst_ids = list()
         for cat_id in active_cat_ids:
             self.inst_ids += self.coco.getAnnIds(catIds=cat_id, iscrowd=False)
+
+        if 'train' in subset and exclude_list_file is not None:
+            excluded_inst_ids = json.load(open(exclude_list_file))
+            self.inst_ids = list(set(self.inst_ids) - set(excluded_inst_ids))
 
         self.n_shots = n_shots
         self.img_size = img_size
