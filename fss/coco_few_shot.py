@@ -58,8 +58,8 @@ class FewShotInstData(data.Dataset):
 
         img_id = inst_anno[0]['image_id']
         img_dict = self.coco.loadImgs(img_id)[0]
-        # img = io.imread(os.path.join(self.coco_dir, self.subset, img_dict['file_name']))
-        img = cv2.imread(os.path.join(self.coco_dir, self.subset, img_dict['file_name']))
+        img = io.imread(os.path.join(self.coco_dir, self.subset, img_dict['file_name']))
+        # img = cv2.imread(os.path.join(self.coco_dir, self.subset, img_dict['file_name']))
         if len(img.shape) == 2:
             img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
 
